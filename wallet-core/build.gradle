@@ -92,15 +92,15 @@ android {
         }
     }
 
-//    publishing {
-//        singleVariant('release') {
-//            withSourcesJar()
-//            // TODO fix javadoc in release
-//            //  task javaDocReleaseGeneration fails with java.lang.UnsupportedOperationException: PermittedSubclasses requires ASM9
-//            //  caused by eu.europa.ec.eudi.openid4vp.ResolvedRequestObject which is a sealed interface
-//            withJavadocJar()
-//        }
-//    }
+    publishing {
+        singleVariant('release') {
+            withSourcesJar()
+            // TODO fix javadoc in release
+            //  task javaDocReleaseGeneration fails with java.lang.UnsupportedOperationException: PermittedSubclasses requires ASM9
+            //  caused by eu.europa.ec.eudi.openid4vp.ResolvedRequestObject which is a sealed interface
+            withJavadocJar()
+        }
+    }
 }
 
 dependencies {
