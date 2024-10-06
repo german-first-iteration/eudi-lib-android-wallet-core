@@ -94,7 +94,7 @@ android {
 // added to publish in Jitpack
     publishing {
         publications {
-            mavenJava(MavenPublication) {
+            release(MavenPublication) {
                 groupId = 'com.github.german-first-iteration'
                 artifactId = 'eudi-lib-android-wallet-core'
                 version = '0.0.1'
