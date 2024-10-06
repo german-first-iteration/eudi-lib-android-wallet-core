@@ -35,6 +35,8 @@ plugins {
 
 apply from: 'jacoco.gradle'
 
+archivesBaseName = "eudi-lib-android-wallet-core"
+
 android {
     namespace NAMESPACE
     group GROUP
@@ -87,6 +89,16 @@ android {
     testOptions {
         unitTests.all {
             useJUnitPlatform()
+        }
+    }
+// added to publish in Jitpack
+    publishing {
+        publications {
+            mavenJava(MavenPublication) {
+                groupId = 'com.github.german-first-iteration'
+                artifactId = 'eudi-lib-android-wallet-core'
+                version = '0.0.1'
+            }
         }
     }
 
