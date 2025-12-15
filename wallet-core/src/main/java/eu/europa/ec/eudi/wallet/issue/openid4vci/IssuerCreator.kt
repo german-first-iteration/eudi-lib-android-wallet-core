@@ -17,8 +17,13 @@
 package eu.europa.ec.eudi.wallet.issue.openid4vci
 
 import android.content.Context
+import com.nimbusds.jose.jwk.Curve
+import com.nimbusds.jwt.SignedJWT
+import eu.europa.ec.eudi.openid4vci.AuthorizeIssuanceConfig
 import eu.europa.ec.eudi.openid4vci.CIAuthorizationServerMetadata
 import eu.europa.ec.eudi.openid4vci.ClientAuthentication
+import eu.europa.ec.eudi.openid4vci.ClientAttestationJWT
+import eu.europa.ec.eudi.openid4vci.ClientAttestationPoPJWTSpec
 import eu.europa.ec.eudi.openid4vci.CredentialConfigurationIdentifier
 import eu.europa.ec.eudi.openid4vci.CredentialIssuerId
 import eu.europa.ec.eudi.openid4vci.CredentialIssuerMetadata
@@ -31,6 +36,7 @@ import eu.europa.ec.eudi.openid4vci.HttpsUrl
 import eu.europa.ec.eudi.openid4vci.JwsAlgorithm
 import eu.europa.ec.eudi.openid4vci.ParUsage
 import eu.europa.ec.eudi.openid4vci.ProofsConfig
+import eu.europa.ec.eudi.openid4vci.RsaConfig
 import eu.europa.ec.eudi.openid4vci.Signer
 import eu.europa.ec.eudi.openid4vci.clientAttestationPOPJWSAlgs
 import eu.europa.ec.eudi.wallet.document.format.DocumentFormat
@@ -55,6 +61,7 @@ import com.nimbusds.jose.JWSAlgorithm
 import com.nimbusds.jose.jwk.JWK
 import org.multipaz.crypto.Algorithm
 import java.net.URI
+import java.time.Clock
 import eu.europa.ec.eudi.openid4vci.DPoPConfig as VciDPoPConfig
 import eu.europa.ec.eudi.openid4vci.ProvisionDPoPSigner as VciProvisionDPoPSigner
 
@@ -104,6 +111,27 @@ internal class IssuerCreator(
     suspend fun createIssuer(offer: Offer): IssuerCreation =
         doCreateIssuer(offer.credentialOffer, offer.issuerRegistration)
 
+    suspend fun createIssuerWithAttestation(
+        issuerUrl: String,
+        attestationJWT: SignedJWT,
+        walletWiaPopSigner: Signer<JWK>,
+        credentialConfigurationIdentifiers: List<CredentialConfigurationIdentifier>,
+    ): Issuer {
+        val authorizationServerMetadata = CredentialIssuerId(issuerUrl)
+            .map { getIssuerMetadata(it).second.first() }
+            .getOrThrow()
+
+        return Issuer.makeWalletInitiated(
+            config = config.toOpenId4VCIConfigWithAttestation(
+                authorizationServerMetadata,
+                attestationJWT,
+                walletWiaPopSigner
+            ),
+            credentialIssuerId = CredentialIssuerId(issuerUrl).getOrThrow(),
+            credentialConfigurationIdentifiers = credentialConfigurationIdentifiers,
+            httpClient = ktorHttpClientFactory()
+        ).getOrThrow()
+    }
     /**
      * Creates an [Issuer] from the given [CredentialConfigurationIdentifier]s.
      * @param issuerUrl The issuer URL.

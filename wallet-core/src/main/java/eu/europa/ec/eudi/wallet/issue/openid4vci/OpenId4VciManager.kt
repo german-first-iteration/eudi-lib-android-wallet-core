@@ -20,6 +20,8 @@ import android.content.Context
 import android.net.Uri
 import androidx.annotation.IntDef
 import com.nimbusds.jose.jwk.Curve
+import com.nimbusds.jose.jwk.JWK
+import com.nimbusds.jwt.SignedJWT
 import eu.europa.ec.eudi.openid4vci.CredentialConfigurationIdentifier
 import eu.europa.ec.eudi.openid4vci.CredentialIssuerMetadata
 import eu.europa.ec.eudi.openid4vci.CredentialResponseEncryptionPolicy
@@ -27,6 +29,7 @@ import eu.europa.ec.eudi.openid4vci.CredentialReusePolicies
 import eu.europa.ec.eudi.openid4vci.EcConfig
 import eu.europa.ec.eudi.openid4vci.EncryptionSupportConfig
 import eu.europa.ec.eudi.openid4vci.RsaConfig
+import eu.europa.ec.eudi.openid4vci.Signer
 import eu.europa.ec.eudi.wallet.document.DeferredDocument
 import eu.europa.ec.eudi.wallet.document.DocumentId
 import eu.europa.ec.eudi.wallet.document.DocumentManager
@@ -45,6 +48,7 @@ import org.multipaz.crypto.Algorithm
 import eu.europa.ec.eudi.wallet.registration.issuer.IssuerRegistrationResolver
 import eu.europa.ec.eudi.wallet.trust.IssuerTrustConfig
 import io.ktor.client.HttpClient
+import java.security.PrivateKey
 import java.util.concurrent.Executor
 
 /**
@@ -128,6 +132,17 @@ interface OpenId4VciManager {
     fun issueDocumentByConfigurationIdentifiers(
         issuerUrl: String,
         credentialConfigurationIds: List<String>,
+        txCode: String? = null,
+        executor: Executor? = null,
+        onIssueEvent: OnIssueEvent,
+    )
+
+    fun issueDocumentByConfigurationIdentifierAttested(
+        issuerUrl: String,
+        credentialConfigurationId: String,
+        walletAttestation: SignedJWT,
+        walletWiaPopPublicKey: JWK,
+        walletWiaPopPrivateKey: PrivateKey,
         txCode: String? = null,
         executor: Executor? = null,
         onIssueEvent: OnIssueEvent,
