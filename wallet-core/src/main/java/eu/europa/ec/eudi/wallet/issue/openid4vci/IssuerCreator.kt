@@ -23,7 +23,8 @@ import eu.europa.ec.eudi.openid4vci.AuthorizeIssuanceConfig
 import eu.europa.ec.eudi.openid4vci.CIAuthorizationServerMetadata
 import eu.europa.ec.eudi.openid4vci.ClientAuthentication
 import eu.europa.ec.eudi.openid4vci.ClientAttestationJWT
-import eu.europa.ec.eudi.openid4vci.ClientAttestationPoPJWTSpec
+import eu.europa.ec.eudi.openid4vci.PositiveDuration
+import eu.europa.ec.eudi.openid4vci.ProvisionClientAttestation
 import eu.europa.ec.eudi.openid4vci.CredentialConfigurationIdentifier
 import eu.europa.ec.eudi.openid4vci.CredentialIssuerId
 import eu.europa.ec.eudi.openid4vci.CredentialIssuerMetadata
@@ -361,6 +362,123 @@ internal class IssuerCreator(
             proofs = proofTypes.toProofsConfig(),
             issuerMetadataPolicy = if (issuerRegistrationEnabled) issuerMetadataPolicy else IssuerMetadataPolicy.IgnoreSigned,
             registrationCertificatePolicy = registrationCertificatePolicy,
+        )
+    }
+    private suspend fun OpenId4VciManager.Config.toOpenId4VCIConfigWithAttestation(
+        authorizationServerMetadata: CIAuthorizationServerMetadata,
+        attestationJWT: SignedJWT,
+        walletWiaPopSigner: Signer<JWK>,
+    ): OpenId4VCIConfig {
+        // Build attestation-based client authentication from the externally supplied wallet
+        // instance attestation JWT and its PoP signer, wrapped in the openid4vci 0.12.1
+        // ProvisionClientAttestation abstraction (see WalletAttestationKey.toClientAuthentication
+        // for the provider-driven equivalent used by the normal issuance path).
+        val clientId = when (val type = clientAuthenticationType) {
+            is OpenId4VciManager.ClientAuthenticationType.None -> type.clientId
+            is OpenId4VciManager.ClientAuthenticationType.AttestationBased -> type.clientId
+        }
+        val attestationAlgorithm = JwsAlgorithm(attestationJWT.header.algorithm.name)
+        val provisionClientAttestation = object : ProvisionClientAttestation {
+            override val algorithm: JwsAlgorithm = attestationAlgorithm
+            override val popAlgorithm: JwsAlgorithm = attestationAlgorithm
+
+            override suspend fun invoke(
+                authorizationServer: HttpsUrl,
+                preferredClientStatusPeriod: PositiveDuration?,
+            ): ProvisionClientAttestation.Provisioned =
+                ProvisionClientAttestation.Provisioned(
+                    clientAttestation = ClientAttestationJWT(attestationJWT),
+                    popSigner = walletWiaPopSigner,
+                )
+        }
+        val auth = ClientAuthentication.AttestationBased(
+            id = clientId,
+            provisionClientAttestation = provisionClientAttestation,
+        )
+        // Keep issuer-level state aligned with normal issuance path; downstream response
+        // processing relies on this for metadata/re-issuance handling.
+        clientAuthentication = auth
+
+        val dPoPUsage = when (dpopConfig) {
+            DPopConfig.Disabled -> DPoPUsage.Never
+
+            DPopConfig.Default, is DPopConfig.Custom -> {
+                val resolvedConfig = when (dpopConfig) {
+                    DPopConfig.Default -> DPopConfig.Default.make(context)
+                    is DPopConfig.Custom -> dpopConfig
+                    else -> error("unreachable")
+                }
+                val signingAlg = resolvedConfig.secureArea.supportedAlgorithms
+                    .firstOrNull { it.isSigning && it.joseAlgorithmIdentifier != null }
+                    ?: throw IllegalStateException("No signing algorithm available for DPoP")
+                val provisionDPoPSigner = if (existingDpopKeyAlias != null) {
+                    object : VciProvisionDPoPSigner {
+                        override val popAlgorithm = JwsAlgorithm(signingAlg.joseAlgorithmIdentifier!!)
+                        override suspend fun invoke(authorizationServer: HttpsUrl): Signer<JWK> =
+                            SecureAreaDpopSigner.fromExistingKey(resolvedConfig, existingDpopKeyAlias, logger)
+                                .also { dpopSigner = it }
+                    }
+                } else {
+                    object : VciProvisionDPoPSigner {
+                        override val popAlgorithm = JwsAlgorithm(signingAlg.joseAlgorithmIdentifier!!)
+                        override suspend fun invoke(authorizationServer: HttpsUrl): Signer<JWK> =
+                            SecureAreaDpopSigner(resolvedConfig, listOf(signingAlg), logger)
+                                .also { dpopSigner = it }
+                    }
+                }
+                DPoPUsage.IfSupported(VciDPoPConfig(provisionDPoPSigner))
+            }
+
+            is DPopConfig.KeyAttested -> {
+                val cfg = dpopConfig as DPopConfig.KeyAttested
+                val signingAlg = cfg.secureArea.supportedAlgorithms
+                    .firstOrNull { it.isSigning && it.joseAlgorithmIdentifier != null }
+                    ?: throw IllegalStateException("No signing algorithm available for DPoP")
+                val provisionDPoPSigner = if (existingDpopKeyAlias != null) {
+                    object : VciProvisionDPoPSigner {
+                        override val popAlgorithm = JwsAlgorithm(signingAlg.joseAlgorithmIdentifier!!)
+                        override suspend fun invoke(authorizationServer: HttpsUrl): Signer<JWK> {
+                            val reuseConfig = DPopConfig.Custom(
+                                secureArea = cfg.secureArea,
+                                createKeySettingsBuilder = {
+                                    error("Existing DPoP keys do not require create-key settings")
+                                },
+                                keyUnlockDataProvider = cfg.keyUnlockDataProvider,
+                            )
+                            return SecureAreaDpopSigner.fromExistingKey(reuseConfig, existingDpopKeyAlias, logger)
+                                .also { dpopSigner = it }
+                        }
+                    }
+                } else {
+                    object : VciProvisionDPoPSigner {
+                        override val popAlgorithm = JwsAlgorithm(signingAlg.joseAlgorithmIdentifier!!)
+                        override suspend fun invoke(authorizationServer: HttpsUrl): Signer<JWK> {
+                            val provisionalConfig = DPopConfig.Default.make(context)
+                            val provisionalSigner =
+                                SecureAreaDpopSigner(provisionalConfig, listOf(signingAlg), logger)
+                            return KeyAttestedSecureAreaDpopSigner(
+                                provisionalSigner, cfg, listOf(signingAlg), logger
+                            ).also { dpopSigner = it }
+                        }
+                    }
+                }
+                DPoPUsage.IfSupported(VciDPoPConfig(provisionDPoPSigner))
+            }
+        }
+
+        return OpenId4VCIConfig(
+            clientAuthentication = auth,
+            authFlowRedirectionURI = URI.create(authFlowRedirectionURI),
+            encryptionSupportConfig = responseEncryptionConfig,
+            supportedCredentialReusePolicies = supportedCredentialReusePolicies,
+            dPoPUsage = dPoPUsage,
+            parUsage = when (parUsage) {
+                OpenId4VciManager.Config.ParUsage.IF_SUPPORTED -> ParUsage.IfSupported()
+                OpenId4VciManager.Config.ParUsage.REQUIRED -> ParUsage.Required()
+                OpenId4VciManager.Config.ParUsage.NEVER -> ParUsage.Never
+                else -> ParUsage.IfSupported()
+            },
+            proofs = proofTypes.toProofsConfig(),
         )
     }
 }
