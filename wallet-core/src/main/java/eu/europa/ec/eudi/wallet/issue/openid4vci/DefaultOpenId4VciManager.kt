@@ -21,6 +21,8 @@ import android.net.Uri
 import androidx.core.net.toUri
 import com.nimbusds.jose.jwk.JWK
 import com.nimbusds.jwt.SignedJWT
+import eu.europa.ec.eudi.openid4vci.AccessToken
+import eu.europa.ec.eudi.openid4vci.AuthorizedRequest
 import eu.europa.ec.eudi.openid4vci.CredentialConfigurationIdentifier
 import eu.europa.ec.eudi.openid4vci.CredentialIssuanceError
 import eu.europa.ec.eudi.openid4vci.CredentialIssuerId
@@ -674,6 +676,7 @@ internal class DefaultOpenId4VciManager(
         listener: OpenId4VciManager.OnResult<IssueEvent>,
     ) {
         var authorizedRequest = issuerAuthorization.authorize(issuer, txCode)
+        ensureDpopTokenBinding(authorizedRequest)
         listener(IssueEvent.Started(offer.offeredDocuments.size))
         val issuedDocumentIds = mutableListOf<DocumentId>()
         val deferredDocumentIds = mutableListOf<DocumentId>()
@@ -706,6 +709,29 @@ internal class DefaultOpenId4VciManager(
             clientAuthentication = issuerCreator.clientAuthentication,
         ).process(response)
         listener(IssueEvent.Finished(issuedDocumentIds + deferredDocumentIds))
+    }
+
+    private suspend fun ensureDpopTokenBinding(authorizedRequest: AuthorizedRequest) {
+        val accessToken = authorizedRequest.accessToken
+        if (accessToken !is AccessToken.DPoP) return
+
+        val tokenCnfJkt = runCatching {
+            val claims = SignedJWT.parse(accessToken.accessToken).jwtClaimsSet
+            val cnf = claims.getJSONObjectClaim("cnf")
+            cnf?.get("jkt") as? String
+        }.getOrNull()
+
+        val signerJkt = issuerCreator.currentDpopJkt()
+        logger?.d(
+            TAG,
+            "DPoP binding check: token cnf.jkt=$tokenCnfJkt, signer jkt=$signerJkt, alias=${issuerCreator.dpopKeyAlias}"
+        )
+
+        if (tokenCnfJkt != null && signerJkt != null && tokenCnfJkt != signerJkt) {
+            throw IllegalStateException(
+                "DPoP key mismatch: token cnf.jkt does not match current signer key thumbprint"
+            )
+        }
     }
 
     /**

@@ -122,7 +122,16 @@ class SecureAreaDpopSigner private constructor(
             config.secureArea.createKey(null, createKeySettings)
         },
         logger = logger,
-    )
+    ) {
+        runCatching {
+            val jwk = JWK.parse(runBlocking { keyInfo.publicKey.toJwk().toString() })
+            val jkt = jwk.computeThumbprint().toString()
+            logger?.d(
+                TAG,
+                "Created DPoP key alias=${keyInfo.alias} alg=${keyInfo.algorithm.joseAlgorithmIdentifier} jkt=$jkt"
+            )
+        }
+    }
 
     /**
      * The Java algorithm identifier for the signing algorithm.
@@ -184,11 +193,14 @@ class SecureAreaDpopSigner private constructor(
         val jwk = JWK.parse(
             keyInfo.publicKey.toJwk().toString()
         )
+        val jkt = runCatching { jwk.computeThumbprint().toString() }.getOrNull()
+        logger?.d(TAG, "Acquire DPoP signer alias=${keyInfo.alias} jkt=$jkt")
         return SignOperation(
             function = { input ->
                 val keyUnlockData = config.keyUnlockDataProvider(keyInfo.alias, secureArea)
                 val provider = keyUnlockData.asProvider()
                 withContext(provider) {
+                    logger?.d(TAG, "Sign DPoP proof with alias=${keyInfo.alias} bytes=${input.size} jkt=$jkt")
                     secureArea.sign(keyInfo.alias, input, Reason.Unspecified).toDerEncoded()
                 }
             },
