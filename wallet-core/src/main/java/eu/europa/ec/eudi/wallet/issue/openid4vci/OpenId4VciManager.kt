@@ -148,6 +148,17 @@ interface OpenId4VciManager {
         onIssueEvent: OnIssueEvent,
     )
 
+    fun issueDocumentByConfigurationIdentifiersAttested(
+        issuerUrl: String,
+        credentialConfigurationIds: List<String>,
+        walletAttestation: SignedJWT,
+        walletWiaPopPublicKey: JWK,
+        walletWiaPopPrivateKey: PrivateKey,
+        txCode: String? = null,
+        executor: Executor? = null,
+        onIssueEvent: OnIssueEvent,
+    )
+
     /**
      * Issue a document using a document format
      * @see DocumentFormat for the available formats
