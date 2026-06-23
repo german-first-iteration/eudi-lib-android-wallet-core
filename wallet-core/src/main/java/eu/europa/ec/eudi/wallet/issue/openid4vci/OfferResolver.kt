@@ -64,6 +64,22 @@ internal class OfferResolver(
                     )
                 )
             }
+
+            is DPopConfig.KeyAttested -> {
+                val algorithm = dpop.secureArea.supportedAlgorithms
+                    .firstOrNull { it.isSigning && it.joseAlgorithmIdentifier != null }
+                    ?.joseAlgorithmIdentifier ?: "ES256"
+                DPoPUsage.IfSupported(
+                    VciDPoPConfig(
+                        object : VciProvisionDPoPSigner {
+                            override val popAlgorithm = JwsAlgorithm(algorithm)
+                            override suspend fun invoke(authorizationServer: HttpsUrl): Signer<JWK> {
+                                error("DPoP signer should not be invoked during offer resolution")
+                            }
+                        }
+                    )
+                )
+            }
         }
         OpenId4VCIConfig(
             clientId = clientId,

@@ -373,6 +373,13 @@ internal class DefaultOpenId4VciManager(
                     DPopConfig.Disabled -> null
                     DPopConfig.Default -> DPopConfig.Default.make(context)
                     is DPopConfig.Custom -> cfg
+                    is DPopConfig.KeyAttested -> DPopConfig.Custom(
+                        secureArea = cfg.secureArea,
+                        createKeySettingsBuilder = {
+                            error("Existing DPoP keys do not require create-key settings")
+                        },
+                        keyUnlockDataProvider = cfg.keyUnlockDataProvider,
+                    )
                 }
 
                 val deferredContext = DeferredContext.fromBytes(

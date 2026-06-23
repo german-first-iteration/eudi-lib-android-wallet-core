@@ -204,7 +204,8 @@ class SecureAreaDpopSigner private constructor(
                     secureArea.sign(keyInfo.alias, input, Reason.Unspecified).toDerEncoded()
                 }
             },
-            publicMaterial = jwk
+            publicMaterial = jwk,
+            dpopKeyAttestation = (keyInfo as? DPopKeyAttestation)?.dpopKeyAttestation,
         )
     }
 
@@ -251,4 +252,8 @@ class SecureAreaDpopSigner private constructor(
             return SecureAreaDpopSigner(config, keyInfo, logger)
         }
     }
+}
+
+interface DPopKeyAttestation {
+    val dpopKeyAttestation: String?
 }

@@ -142,9 +142,16 @@ interface DPopSigner : Signer<JWK> {
                 DPopConfig.Disabled -> throw IllegalStateException("DPoP is disabled in the configuration")
                 DPopConfig.Default -> DPopConfig.Default.make(context)
                 is DPopConfig.Custom -> config
+                is DPopConfig.KeyAttested -> config
             }
 
-            val supportedAlgorithms = config.secureArea.supportedAlgorithms
+            val secureArea = when (config) {
+                is DPopConfig.Custom -> config.secureArea
+                is DPopConfig.KeyAttested -> config.secureArea
+                else -> error("DPoP config was not resolved")
+            }
+
+            val supportedAlgorithms = secureArea.supportedAlgorithms
                 .filter { it.joseAlgorithmIdentifier != null }
                 .filter { it.isSigning }
                 .associateBy { it.joseAlgorithmIdentifier }
@@ -170,7 +177,15 @@ interface DPopSigner : Signer<JWK> {
                         "supported algorithms: ${supportedAlgorithms.keys}"
             }
 
-            SecureAreaDpopSigner(config, matchedAlgorithms, logger)
+            when (config) {
+                is DPopConfig.Custom -> SecureAreaDpopSigner(config, matchedAlgorithms, logger)
+                is DPopConfig.KeyAttested -> {
+                    val provisionalConfig = DPopConfig.Default.make(context)
+                    val provisionalSigner = SecureAreaDpopSigner(provisionalConfig, matchedAlgorithms, logger)
+                    KeyAttestedSecureAreaDpopSigner(provisionalSigner, config, matchedAlgorithms, logger)
+                }
+                else -> error("DPoP config was not resolved")
+            }
 
         }
     }

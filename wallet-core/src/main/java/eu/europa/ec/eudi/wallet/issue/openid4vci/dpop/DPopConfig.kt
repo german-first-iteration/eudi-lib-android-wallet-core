@@ -2,6 +2,7 @@ package eu.europa.ec.eudi.wallet.issue.openid4vci.dpop
 
 import java.io.File
 import java.security.SecureRandom
+import eu.europa.ec.eudi.openid4vci.Nonce
 import kotlinx.io.bytestring.ByteString
 import org.multipaz.context.initializeApplication
 import org.multipaz.crypto.Algorithm
@@ -26,6 +27,8 @@ import kotlin.time.Duration
  * - [Disabled] - DPoP is not used
  * - [Default] - Uses Android Keystore with default settings
  * - [Custom] - Uses a custom secure area with custom key settings
+ * - [KeyAttested] - Uses a provisional local DPoP key until an authorization-server nonce
+ *   is available, then creates a nonce-bound attested key in a custom secure area
  *
  * ## Example Usage
  *
@@ -227,6 +230,36 @@ sealed interface DPopConfig {
         val secureArea: SecureArea,
         val createKeySettingsBuilder: (List<Algorithm>) -> CreateKeySettings,
         val keyUnlockDataProvider: KeyUnlockDataProvider = KeyUnlockDataProvider.None
+    ) : DPopConfig
+
+    /**
+     * DPoP configuration for flows that require a Wallet Trust Evidence bound to the
+     * authorization server's DPoP nonce.
+     *
+     * This is intentionally separate from [Custom]. A [Custom] configuration creates
+     * one DPoP key immediately from static key settings, while key-attested PID issuance
+     * needs a two-step lifecycle:
+     *
+     * 1. Send the first DPoP proof with a provisional local key, before the authorization
+     *    server has returned a nonce.
+     * 2. Once the token endpoint provides `DPoP-Nonce`, call
+     *    [attestedCreateKeySettingsBuilder] with that nonce and switch to the attested
+     *    secure-area key whose Wallet Trust Evidence is bound to it.
+     *
+     * The attested key is then used for token and credential endpoint proofs so the
+     * access and refresh tokens are bound to the key represented by the Wallet Trust
+     * Evidence.
+     *
+     * @property secureArea The secure area used to create and access the attested DPoP key.
+     * @property attestedCreateKeySettingsBuilder Creates key settings from negotiated
+     *           algorithms and the token endpoint DPoP nonce.
+     * @property keyUnlockDataProvider Provides unlock data when the attested DPoP key
+     *           requires user authentication for signing.
+     */
+    data class KeyAttested(
+        val secureArea: SecureArea,
+        val attestedCreateKeySettingsBuilder: (List<Algorithm>, Nonce) -> CreateKeySettings,
+        val keyUnlockDataProvider: KeyUnlockDataProvider = KeyUnlockDataProvider.None,
     ) : DPopConfig
 }
 
