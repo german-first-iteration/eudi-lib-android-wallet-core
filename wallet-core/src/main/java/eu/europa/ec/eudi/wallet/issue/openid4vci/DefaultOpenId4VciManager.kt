@@ -529,6 +529,9 @@ internal class DefaultOpenId4VciManager(
 
     override fun reissueDocument(
         documentId: DocumentId,
+        walletAttestation: SignedJWT,
+        walletWiaPopPublicKey: JWK,
+        walletWiaPopPrivateKey: PrivateKey,
         allowAuthorizationFallback: Boolean,
         executor: Executor?,
         onIssueEvent: OpenId4VciManager.OnIssueEvent
@@ -544,13 +547,30 @@ internal class DefaultOpenId4VciManager(
                 //  Reconstruct AuthorizedRequest from stored metadata
                 var authorizedRequest = ReissuanceIssuer().reconstructAuthorizedRequest(issuanceMetadata)
 
-                //  Create Issuer using IssuerCreator (resolves issuer metadata)
-                //  Pass existing DPoP key alias so the same key is reused
-                //  (access token is bound to original key's thumbprint)
-                val (issuer, issuerRegistration) = issuerCreator.createIssuer(
-                    issuanceMetadata.credentialIssuerId,
-                    listOf(CredentialConfigurationIdentifier(issuanceMetadata.credentialConfigurationIdentifier)),
-                    existingDpopKeyAlias = issuanceMetadata.dPoPKeyAlias
+                //  Create Issuer using IssuerCreator (resolves issuer metadata).
+                //  Re-issuance authenticates the client to the token endpoint with the wallet
+                //  instance attestation (OAuth-Client-Attestation), the same way attested issuance
+                //  does. The PID issuer config uses ClientAuthenticationType.None (so credential
+                //  proofs stay key-attested without WIA — see WD-2143/#358), so the WIA must be
+                //  supplied out-of-band here or the refresh_token request is rejected with
+                //  invalid_client "Client Attestation not found".
+                //  Pass the existing DPoP key alias so the same key is reused (the access token is
+                //  bound to the original key's thumbprint).
+                val walletWiaPopSigner = signerFromPrivateKey(
+                    signingAlgorithm = "SHA256withECDSA",
+                    privateKey = walletWiaPopPrivateKey,
+                    publicMaterial = walletWiaPopPublicKey,
+                    secureRandom = null,
+                    provider = null,
+                )
+                val issuer = issuerCreator.createIssuerWithAttestation(
+                    issuerUrl = issuanceMetadata.credentialIssuerId,
+                    attestationJWT = walletAttestation,
+                    walletWiaPopSigner = walletWiaPopSigner,
+                    credentialConfigurationIdentifiers = listOf(
+                        CredentialConfigurationIdentifier(issuanceMetadata.credentialConfigurationIdentifier)
+                    ),
+                    existingDpopKeyAlias = issuanceMetadata.dPoPKeyAlias,
                 )
 
                 //  Refresh the access token using the stored refresh token.
@@ -577,7 +597,7 @@ internal class DefaultOpenId4VciManager(
                     issuerAuthorization.authorize(issuer, null)
                 }
 
-                val offer = Offer(issuer.credentialOffer, issuerRegistration)
+                val offer = Offer(issuer.credentialOffer)
 
                 //  Create a new UnsignedDocument (fresh keys) via DocumentCreator
                 //    This fires IssueEvent.DocumentRequiresCreateSettings.MandatoryReusePolicy

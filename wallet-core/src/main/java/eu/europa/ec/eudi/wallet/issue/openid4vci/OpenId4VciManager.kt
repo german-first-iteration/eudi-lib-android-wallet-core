@@ -266,6 +266,9 @@ interface OpenId4VciManager {
      */
     fun reissueDocument(
         documentId: DocumentId,
+        walletAttestation: SignedJWT,
+        walletWiaPopPublicKey: JWK,
+        walletWiaPopPrivateKey: PrivateKey,
         allowAuthorizationFallback: Boolean = true,
         executor: Executor? = null,
         onIssueEvent: OnIssueEvent,
