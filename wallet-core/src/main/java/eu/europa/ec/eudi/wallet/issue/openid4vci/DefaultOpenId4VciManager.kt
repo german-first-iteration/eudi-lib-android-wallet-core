@@ -529,6 +529,23 @@ internal class DefaultOpenId4VciManager(
 
     override fun reissueDocument(
         documentId: DocumentId,
+        allowAuthorizationFallback: Boolean,
+        executor: Executor?,
+        onIssueEvent: OpenId4VciManager.OnIssueEvent
+    ) {
+        launch(executor, onIssueEvent) { coroutineScope, listener ->
+            runReissue(documentId, allowAuthorizationFallback, coroutineScope, listener) { issuanceMetadata ->
+                issuerCreator.createIssuer(
+                    issuanceMetadata.credentialIssuerId,
+                    listOf(CredentialConfigurationIdentifier(issuanceMetadata.credentialConfigurationIdentifier)),
+                    existingDpopKeyAlias = issuanceMetadata.dPoPKeyAlias,
+                )
+            }
+        }
+    }
+
+    override fun reissueDocumentAttested(
+        documentId: DocumentId,
         walletAttestation: SignedJWT,
         walletWiaPopPublicKey: JWK,
         walletWiaPopPrivateKey: PrivateKey,
@@ -537,25 +554,14 @@ internal class DefaultOpenId4VciManager(
         onIssueEvent: OpenId4VciManager.OnIssueEvent
     ) {
         launch(executor, onIssueEvent) { coroutineScope, listener ->
-            try {
-                //  Load issuance metadata from storage
-                val issuanceMetadata = loadIssuanceMetadata(documentId)
-                    ?: throw IllegalStateException("No issuance metadata found for document $documentId")
-
-                logger?.d(TAG, "Loaded issuanceMetadata: credentialIssuerId=${issuanceMetadata.credentialIssuerId}")
-
-                //  Reconstruct AuthorizedRequest from stored metadata
-                var authorizedRequest = ReissuanceIssuer().reconstructAuthorizedRequest(issuanceMetadata)
-
-                //  Create Issuer using IssuerCreator (resolves issuer metadata).
-                //  Re-issuance authenticates the client to the token endpoint with the wallet
-                //  instance attestation (OAuth-Client-Attestation), the same way attested issuance
-                //  does. The PID issuer config uses ClientAuthenticationType.None (so credential
-                //  proofs stay key-attested without WIA — see WD-2143/#358), so the WIA must be
-                //  supplied out-of-band here or the refresh_token request is rejected with
-                //  invalid_client "Client Attestation not found".
-                //  Pass the existing DPoP key alias so the same key is reused (the access token is
-                //  bound to the original key's thumbprint).
+            runReissue(documentId, allowAuthorizationFallback, coroutineScope, listener) { issuanceMetadata ->
+                //  Authenticate the client to the token endpoint with the wallet instance
+                //  attestation (OAuth-Client-Attestation), the same way attested issuance does.
+                //  Issuers whose config uses ClientAuthenticationType.None (e.g. the PID/RWSCA issuer
+                //  — credential proofs stay key-attested without WIA, see WD-2143/#358) still require
+                //  client attestation on /token, so the WIA is supplied out-of-band here; otherwise
+                //  the refresh_token request is rejected with invalid_client "Client Attestation not
+                //  found".
                 val walletWiaPopSigner = signerFromPrivateKey(
                     signingAlgorithm = "SHA256withECDSA",
                     privateKey = walletWiaPopPrivateKey,
@@ -563,118 +569,153 @@ internal class DefaultOpenId4VciManager(
                     secureRandom = null,
                     provider = null,
                 )
-                val issuer = issuerCreator.createIssuerWithAttestation(
-                    issuerUrl = issuanceMetadata.credentialIssuerId,
-                    attestationJWT = walletAttestation,
-                    walletWiaPopSigner = walletWiaPopSigner,
-                    credentialConfigurationIdentifiers = listOf(
-                        CredentialConfigurationIdentifier(issuanceMetadata.credentialConfigurationIdentifier)
+                //  createIssuerWithAttestation does not resolve an issuer registration
+                //  certificate, so the attested path has no registration outcome to present.
+                IssuerCreation(
+                    issuer = issuerCreator.createIssuerWithAttestation(
+                        issuerUrl = issuanceMetadata.credentialIssuerId,
+                        attestationJWT = walletAttestation,
+                        walletWiaPopSigner = walletWiaPopSigner,
+                        credentialConfigurationIdentifiers = listOf(
+                            CredentialConfigurationIdentifier(issuanceMetadata.credentialConfigurationIdentifier)
+                        ),
+                        existingDpopKeyAlias = issuanceMetadata.dPoPKeyAlias,
                     ),
-                    existingDpopKeyAlias = issuanceMetadata.dPoPKeyAlias,
+                    issuerRegistration = null,
                 )
-
-                //  Refresh the access token using the stored refresh token.
-                //  Only fall back to full OAuth authorization on 400 invalid_grant
-                //  (RFC 6749 §5.2: refresh token expired/revoked). Server errors (5xx),
-                //  network failures, and other OAuth error codes are re-thrown — falling
-                //  back to authorization would hit the same broken server or mask
-                //  configuration errors.
-                var updatedAuthorizedRequest = try {
-                    with(issuer) {
-                        authorizedRequest.refresh().getOrThrow()
-                    }
-                } catch (e: Throwable) {
-                    val isInvalidGrant = e is CredentialIssuanceError.AccessTokenRequestFailed
-                            && e.error == "invalid_grant"
-                    if (!isInvalidGrant) throw e
-                    if (!allowAuthorizationFallback) {
-                        throw ReissuanceAuthorizationException(
-                            "Re-issuance of document $documentId requires user authorization (refresh token expired)",
-                            cause = e
-                        )
-                    }
-                    logger?.d(TAG, "Refresh token expired for $documentId, falling back to full authorization")
-                    issuerAuthorization.authorize(issuer, null)
-                }
-
-                val offer = Offer(issuer.credentialOffer)
-
-                //  Create a new UnsignedDocument (fresh keys) via DocumentCreator
-                //    This fires IssueEvent.DocumentRequiresCreateSettings.MandatoryReusePolicy
-                //    or IssueEvent.DocumentRequiresCreateSettings.OptionalReusePolicy so the app
-                //    can provide the required settings (secure area, key settings, etc.)
-                val documentCreator = DocumentCreator(
-                    documentManager = documentManager,
-                    listener = listener,
-                    supportedPolicies = config.supportedCredentialReusePolicies,
-                    logger = logger
-                )
-                val requestMap = documentCreator.createDocuments(offer)
-
-                listener(IssueEvent.Started(requestMap.size))
-
-                //  Submit the issuance request using stored AuthorizedRequest
-                //  (skips the authorization flow - uses refresh token instead)
-                val submit = SubmitRequest(walletProvider, issuer, updatedAuthorizedRequest)
-                var response = submit.request(requestMap).also {
-                    authorizedRequest = submit.authorizedRequest
-                }
-
-                //  Check for authentication failure (401 / InvalidToken)
-                //    This happens when both stored access token AND refresh token are invalid.
-                //    Fall back to full OAuth authorization flow and retry with fresh tokens.
-                if (isAuthenticationFailure(response)) {
-                    if (!allowAuthorizationFallback) {
-                        throw ReissuanceAuthorizationException(
-                            "Re-issuance of document $documentId requires user authorization (tokens expired)"
-                        )
-                    }
-                    logger?.d(TAG, "Re-issuance token expired for $documentId, falling back to full authorization")
-                    authorizedRequest = issuerAuthorization.authorize(issuer, null)
-                    val retrySubmit = SubmitRequest(walletProvider, issuer, authorizedRequest)
-                    response = retrySubmit.request(requestMap).also {
-                        authorizedRequest = retrySubmit.authorizedRequest
-                    }
-                }
-
-                //  Process the response: store new document, then delete old one
-                val issuedDocumentIds = mutableListOf<DocumentId>()
-                val deferredDocumentIds = mutableListOf<DocumentId>()
-                ProcessResponse(
-                    documentManager = documentManager,
-                    deferredContextFactory = DeferredContextFactory(issuer, authorizedRequest, issuerCreator.dpopKeyAlias),
-                    clientAttestationPopKeyId = issuerCreator.clientAttestationPopKeyId,
-                    listener = listener,
-                    issuedDocumentIds = issuedDocumentIds,
-                    deferredDocumentIds = deferredDocumentIds,
-                    logger = logger,
-                    authorizedRequest = authorizedRequest,
-                    issuer = issuer,
-                    documentToConfigurationMap = requestMap,
-                    dpopKeyAlias = issuerCreator.dpopKeyAlias,
-                    issuanceMetadataStorage = issuanceMetadataStorage,
-                    clientAuthentication = issuerCreator.clientAuthentication,
-                    replacesDocumentId = documentId,
-                    issuerTrustConfig = issuerTrustConfig,
-                ).process(response)
-
-                //  If new document(s) issued successfully, delete the old document.
-                //  If the outcome was deferred, the old document stays alive — the
-                //  replacesDocumentId stored in the deferred context will trigger
-                //  deletion when issueDeferredDocument() eventually succeeds.
-                if (issuedDocumentIds.isNotEmpty()) {
-                    documentManager.deleteDocumentById(documentId)
-                    logger?.d(TAG, "Deleted old document $documentId after re-issuance")
-                }
-
-                listener(IssueEvent.Finished(issuedDocumentIds + deferredDocumentIds))
-
-            } catch (e: Throwable) {
-                if (e !is CancellationException) {
-                    listener(failure(e))
-                }
-                coroutineScope.cancel("reissueDocument failed", e)
             }
+        }
+    }
+
+    /**
+     * Shared re-issuance flow for [reissueDocument] and [reissueDocumentAttested]. [createIssuer]
+     * builds the issuer once the stored [IssuanceMetadata] is loaded, letting the caller choose
+     * config-based or attestation-based client authentication.
+     *
+     * Reuses the existing DPoP key (the access token is bound to the original key's thumbprint) and
+     * only falls back to full OAuth authorization on a 400 `invalid_grant` when
+     * [allowAuthorizationFallback] is set.
+     */
+    private suspend fun runReissue(
+        documentId: DocumentId,
+        allowAuthorizationFallback: Boolean,
+        coroutineScope: CoroutineScope,
+        listener: OpenId4VciManager.OnResult<IssueEvent>,
+        createIssuer: suspend (IssuanceMetadata) -> IssuerCreation,
+    ) {
+        try {
+            //  Load issuance metadata from storage
+            val issuanceMetadata = loadIssuanceMetadata(documentId)
+                ?: throw IllegalStateException("No issuance metadata found for document $documentId")
+
+            logger?.d(TAG, "Loaded issuanceMetadata: credentialIssuerId=${issuanceMetadata.credentialIssuerId}")
+
+            //  Reconstruct AuthorizedRequest from stored metadata
+            var authorizedRequest = ReissuanceIssuer().reconstructAuthorizedRequest(issuanceMetadata)
+
+            //  Create Issuer using IssuerCreator (resolves issuer metadata)
+            val (issuer, issuerRegistration) = createIssuer(issuanceMetadata)
+
+            //  Refresh the access token using the stored refresh token.
+            //  Only fall back to full OAuth authorization on 400 invalid_grant
+            //  (RFC 6749 §5.2: refresh token expired/revoked). Server errors (5xx),
+            //  network failures, and other OAuth error codes are re-thrown — falling
+            //  back to authorization would hit the same broken server or mask
+            //  configuration errors.
+            var updatedAuthorizedRequest = try {
+                with(issuer) {
+                    authorizedRequest.refresh().getOrThrow()
+                }
+            } catch (e: Throwable) {
+                val isInvalidGrant = e is CredentialIssuanceError.AccessTokenRequestFailed
+                        && e.error == "invalid_grant"
+                if (!isInvalidGrant) throw e
+                if (!allowAuthorizationFallback) {
+                    throw ReissuanceAuthorizationException(
+                        "Re-issuance of document $documentId requires user authorization (refresh token expired)",
+                        cause = e
+                    )
+                }
+                logger?.d(TAG, "Refresh token expired for $documentId, falling back to full authorization")
+                issuerAuthorization.authorize(issuer, null)
+            }
+
+            val offer = Offer(issuer.credentialOffer, issuerRegistration)
+
+            //  Create a new UnsignedDocument (fresh keys) via DocumentCreator
+            //    This fires IssueEvent.DocumentRequiresCreateSettings.MandatoryReusePolicy
+            //    or IssueEvent.DocumentRequiresCreateSettings.OptionalReusePolicy so the app
+            //    can provide the required settings (secure area, key settings, etc.)
+            val documentCreator = DocumentCreator(
+                documentManager = documentManager,
+                listener = listener,
+                supportedPolicies = config.supportedCredentialReusePolicies,
+                logger = logger
+            )
+            val requestMap = documentCreator.createDocuments(offer)
+
+            listener(IssueEvent.Started(requestMap.size))
+
+            //  Submit the issuance request using stored AuthorizedRequest
+            //  (skips the authorization flow - uses refresh token instead)
+            val submit = SubmitRequest(walletProvider, issuer, updatedAuthorizedRequest)
+            var response = submit.request(requestMap).also {
+                authorizedRequest = submit.authorizedRequest
+            }
+
+            //  Check for authentication failure (401 / InvalidToken)
+            //    This happens when both stored access token AND refresh token are invalid.
+            //    Fall back to full OAuth authorization flow and retry with fresh tokens.
+            if (isAuthenticationFailure(response)) {
+                if (!allowAuthorizationFallback) {
+                    throw ReissuanceAuthorizationException(
+                        "Re-issuance of document $documentId requires user authorization (tokens expired)"
+                    )
+                }
+                logger?.d(TAG, "Re-issuance token expired for $documentId, falling back to full authorization")
+                authorizedRequest = issuerAuthorization.authorize(issuer, null)
+                val retrySubmit = SubmitRequest(walletProvider, issuer, authorizedRequest)
+                response = retrySubmit.request(requestMap).also {
+                    authorizedRequest = retrySubmit.authorizedRequest
+                }
+            }
+
+            //  Process the response: store new document, then delete old one
+            val issuedDocumentIds = mutableListOf<DocumentId>()
+            val deferredDocumentIds = mutableListOf<DocumentId>()
+            ProcessResponse(
+                documentManager = documentManager,
+                deferredContextFactory = DeferredContextFactory(issuer, authorizedRequest, issuerCreator.dpopKeyAlias),
+                clientAttestationPopKeyId = issuerCreator.clientAttestationPopKeyId,
+                listener = listener,
+                issuedDocumentIds = issuedDocumentIds,
+                deferredDocumentIds = deferredDocumentIds,
+                logger = logger,
+                authorizedRequest = authorizedRequest,
+                issuer = issuer,
+                documentToConfigurationMap = requestMap,
+                dpopKeyAlias = issuerCreator.dpopKeyAlias,
+                issuanceMetadataStorage = issuanceMetadataStorage,
+                clientAuthentication = issuerCreator.clientAuthentication,
+                replacesDocumentId = documentId,
+                issuerTrustConfig = issuerTrustConfig,
+            ).process(response)
+
+            //  If new document(s) issued successfully, delete the old document.
+            //  If the outcome was deferred, the old document stays alive — the
+            //  replacesDocumentId stored in the deferred context will trigger
+            //  deletion when issueDeferredDocument() eventually succeeds.
+            if (issuedDocumentIds.isNotEmpty()) {
+                documentManager.deleteDocumentById(documentId)
+                logger?.d(TAG, "Deleted old document $documentId after re-issuance")
+            }
+
+            listener(IssueEvent.Finished(issuedDocumentIds + deferredDocumentIds))
+        } catch (e: Throwable) {
+            if (e !is CancellationException) {
+                listener(failure(e))
+            }
+            coroutineScope.cancel("reissueDocument failed", e)
         }
     }
 

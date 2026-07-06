@@ -160,7 +160,9 @@ internal class IssuerCreator(
             credentialIssuerId = CredentialIssuerId(issuerUrl).getOrThrow(),
             credentialConfigurationIdentifiers = credentialConfigurationIdentifiers,
             httpClient = ktorHttpClientFactory()
-        ).getOrThrow()
+            // Since 0.30.0 makeWalletInitiated also yields the registration policy
+            // violations; take the issuer, as doCreateIssuer does.
+        ).getOrThrow().first
     }
     /**
      * Creates an [Issuer] from the given [CredentialConfigurationIdentifier]s.

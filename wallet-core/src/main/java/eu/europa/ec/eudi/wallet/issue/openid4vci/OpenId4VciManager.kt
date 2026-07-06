@@ -266,6 +266,30 @@ interface OpenId4VciManager {
      */
     fun reissueDocument(
         documentId: DocumentId,
+        allowAuthorizationFallback: Boolean = true,
+        executor: Executor? = null,
+        onIssueEvent: OnIssueEvent,
+    )
+
+    /**
+     * Re-issues a document like [reissueDocument], additionally authenticating the client to the
+     * token endpoint with a wallet instance attestation (OAuth-Client-Attestation).
+     *
+     * Use this variant for issuers whose configured client authentication is
+     * [ClientAuthenticationType.None] but whose `/token` endpoint still requires client attestation
+     * (e.g. the PID/RWSCA issuer, where credential proofs stay key-attested without a WIA — see
+     * WD-2143/#358). The three WIA parameters must be supplied together.
+     *
+     * @param documentId the ID of the document to re-issue
+     * @param walletAttestation the wallet instance attestation JWT (WIA)
+     * @param walletWiaPopPublicKey public key for the WIA proof-of-possession
+     * @param walletWiaPopPrivateKey private key for the WIA proof-of-possession
+     * @param allowAuthorizationFallback see [reissueDocument]
+     * @param executor see [reissueDocument]
+     * @param onIssueEvent the callback to be called during the re-issuance process
+     */
+    fun reissueDocumentAttested(
+        documentId: DocumentId,
         walletAttestation: SignedJWT,
         walletWiaPopPublicKey: JWK,
         walletWiaPopPrivateKey: PrivateKey,
