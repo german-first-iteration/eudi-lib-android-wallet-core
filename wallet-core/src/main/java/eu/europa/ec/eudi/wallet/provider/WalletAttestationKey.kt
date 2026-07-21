@@ -17,6 +17,7 @@
 package eu.europa.ec.eudi.wallet.provider
 
 import com.nimbusds.jose.jwk.JWK
+import com.nimbusds.jwt.SignedJWT
 import eu.europa.ec.eudi.openid4vci.ClientAttestationJWT
 import eu.europa.ec.eudi.openid4vci.ClientAuthentication
 import eu.europa.ec.eudi.openid4vci.HttpsUrl
@@ -33,8 +34,13 @@ open class WalletAttestationKey(
     val signFunction: suspend (ByteArray) -> ByteArray,
 ) {
 
-    fun WalletInstanceAttestationProvider.toClientAuthentication(
-        clientId: String,
+    /**
+     * @param clientId the `client_id` to authenticate with, or null to derive it from the client
+     *   attestation. Pass a value only to keep using one from an earlier issuance (see
+     *   [eu.europa.ec.eudi.wallet.issue.openid4vci.DeferredContext]); fresh issuance derives it.
+     */
+    suspend fun WalletInstanceAttestationProvider.toClientAuthentication(
+        clientId: String? = null,
     ): Result<ClientAuthentication.AttestationBased> =
         runCatching {
             val joseAlgId = checkNotNull(keyInfo.algorithm.joseAlgorithmIdentifier) {
@@ -48,6 +54,22 @@ open class WalletAttestationKey(
             val walletAttestationsProvider = this@toClientAuthentication
             val walletAttestationKey = this@WalletAttestationKey
 
+            // The request `client_id` must equal the client attestation's `sub`, so it is derived
+            // from the attestation rather than taken from ClientAuthenticationType.AttestationBased
+            // (whose configured value is the issuer URL for our wallet). Fetch the attestation up
+            // front for the subject and hand that same one to the first provisioning call, so the
+            // wallet provider is not asked twice for it.
+            var pendingAttestation: String? = null
+            val resolvedClientId = clientId ?: run {
+                val attestation = walletAttestationsProvider
+                    .getWalletAttestation(walletAttestationKey.keyInfo)
+                    .getOrThrow()
+                pendingAttestation = attestation
+                requireNotNull(SignedJWT.parse(attestation).jwtClaimsSet.subject) {
+                    "Client attestation JWT is missing the 'sub' (client id) claim"
+                }
+            }
+
             val provisionClientAttestation = object : ProvisionClientAttestation {
                 override val algorithm: JwsAlgorithm = jwsAlgorithm
                 override val popAlgorithm: JwsAlgorithm = jwsAlgorithm
@@ -56,9 +78,10 @@ open class WalletAttestationKey(
                     authorizationServer: HttpsUrl,
                     preferredClientStatusPeriod: PositiveDuration?,
                 ): ProvisionClientAttestation.Provisioned {
-                    val jwtString = walletAttestationsProvider
-                        .getWalletAttestation(walletAttestationKey.keyInfo)
-                        .getOrThrow()
+                    val jwtString = pendingAttestation?.also { pendingAttestation = null }
+                        ?: walletAttestationsProvider
+                            .getWalletAttestation(walletAttestationKey.keyInfo)
+                            .getOrThrow()
                     val clientAttestation = ClientAttestationJWT(jwtString)
                     val popSigner = object : Signer<JWK> {
                         override val javaAlgorithm: String = javaAlg
@@ -81,7 +104,7 @@ open class WalletAttestationKey(
             }
 
             ClientAuthentication.AttestationBased(
-                id = clientId,
+                id = resolvedClientId,
                 provisionClientAttestation = provisionClientAttestation,
             )
         }

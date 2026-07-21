@@ -129,7 +129,10 @@ internal fun DeferredContext.Companion.fromBytes(
             } ?: error("Key alias '${dto.clientAttestationPopKeyId}' not found in WalletKeyManager")
 
             with(key) {
-                walletInstanceAttestationProvider.toClientAuthentication(dto.clientId)
+                // Keep the client_id the original issuance authenticated with.
+                runBlocking {
+                    walletInstanceAttestationProvider.toClientAuthentication(dto.clientId)
+                }
             }.getOrThrow()
         } else {
             ClientAuthentication.None(dto.clientId)

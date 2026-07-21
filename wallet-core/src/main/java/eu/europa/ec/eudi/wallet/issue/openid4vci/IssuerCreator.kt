@@ -286,7 +286,7 @@ internal class IssuerCreator(
                         .map {
                             clientAttestationPopKeyId = it.keyInfo.alias
                             with(it) {
-                                walletAttestationsProvider.toClientAuthentication(type.clientId).getOrThrow()
+                                walletAttestationsProvider.toClientAuthentication().getOrThrow()
                             }
                         }.getOrThrow()
                 }
@@ -451,9 +451,13 @@ internal class IssuerCreator(
         // instance attestation JWT and its PoP signer, wrapped in the openid4vci 0.12.1
         // ProvisionClientAttestation abstraction (see WalletAttestationKey.toClientAuthentication
         // for the provider-driven equivalent used by the normal issuance path).
-        val clientId = when (val type = clientAuthenticationType) {
-            is OpenId4VciManager.ClientAuthenticationType.None -> type.clientId
-            is OpenId4VciManager.ClientAuthenticationType.AttestationBased -> type.clientId
+        //
+        // In attestation-based client authentication the request `client_id` (and the client
+        // attestation PoP `iss`) must equal the client attestation's `sub`; using the configured
+        // clientAuthenticationType.clientId instead makes the issuer reject the request with
+        // "Invalid client id". Derive the client id from the attestation itself.
+        val clientId = requireNotNull(attestationJWT.jwtClaimsSet.subject) {
+            "Client attestation JWT is missing the 'sub' (client id) claim"
         }
         val attestationAlgorithm = JwsAlgorithm(attestationJWT.header.algorithm.name)
         val provisionClientAttestation = object : ProvisionClientAttestation {
