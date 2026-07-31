@@ -469,7 +469,7 @@ internal class IssuerCreator(
                 preferredClientStatusPeriod: PositiveDuration?,
             ): ProvisionClientAttestation.Provisioned =
                 ProvisionClientAttestation.Provisioned(
-                    clientAttestation = ClientAttestationJWT(attestationJWT),
+                    clientAttestation = ClientAttestationJWT(attestationJWT.serialize()),
                     popSigner = walletWiaPopSigner,
                 )
         }
