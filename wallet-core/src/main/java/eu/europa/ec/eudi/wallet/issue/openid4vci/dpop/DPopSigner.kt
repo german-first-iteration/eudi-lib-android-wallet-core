@@ -180,7 +180,7 @@ interface DPopSigner : Signer<JWK> {
             when (config) {
                 is DPopConfig.Custom -> SecureAreaDpopSigner(config, matchedAlgorithms, logger)
                 is DPopConfig.KeyAttested -> {
-                    val provisionalConfig = DPopConfig.Default.make(context)
+                    val provisionalConfig = config.provisionalConfig ?: DPopConfig.Default.make(context)
                     val provisionalSigner = SecureAreaDpopSigner(provisionalConfig, matchedAlgorithms, logger)
                     KeyAttestedSecureAreaDpopSigner(provisionalSigner, config, matchedAlgorithms, logger)
                 }

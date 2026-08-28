@@ -255,11 +255,16 @@ sealed interface DPopConfig {
      *           algorithms and the token endpoint DPoP nonce.
      * @property keyUnlockDataProvider Provides unlock data when the attested DPoP key
      *           requires user authentication for signing.
+     * @property provisionalConfig Configuration for the provisional key used before the
+     *           authorization server returns a nonce. Defaults to [Default], which stores its
+     *           secure area metadata in a plaintext database; supply a [Custom] configuration
+     *           backed by encrypted storage to avoid that.
      */
     data class KeyAttested(
         val secureArea: SecureArea,
         val attestedCreateKeySettingsBuilder: (List<Algorithm>, Nonce) -> CreateKeySettings,
         val keyUnlockDataProvider: KeyUnlockDataProvider = KeyUnlockDataProvider.None,
+        val provisionalConfig: Custom? = null,
     ) : DPopConfig
 }
 
