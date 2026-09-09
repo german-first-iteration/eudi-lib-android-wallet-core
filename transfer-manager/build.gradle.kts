@@ -1,11 +1,41 @@
+import project.convention.logic.config.LibraryModule
+
 plugins {
-    id("eudi.android-library")
-    id("eudi.publishing")
+    // EUDI-changed: the app hosts this module, so it uses the app's library convention
+    // plugin instead of upstream's eudi.android-library, and is not published from here.
+    id("project.android.library")
     id("kotlin-parcelize")
 }
 
+val NAMESPACE: String by project
+
+moduleConfig {
+    module = LibraryModule.CoreTransferManager
+}
+
+android {
+    namespace = NAMESPACE
+    compileSdk = 35
+
+    defaultConfig {
+        minSdk = 26
+        consumerProguardFiles("consumer-rules.pro")
+    }
+}
+
+// EUDI-changed: opt-ins upstream's convention plugin supplies.
+kotlin {
+    compilerOptions {
+        freeCompilerArgs.addAll(
+            "-opt-in=kotlin.RequiresOptIn",
+            "-opt-in=kotlin.time.ExperimentalTime",
+        )
+    }
+}
+
 dependencies {
-    implementation(project(":document-manager"))
+    // EUDI-changed: :document-manager upstream, :core:document-manager inside the app.
+    implementation(project(":core:document-manager"))
 
     implementation(libs.appcompat)
     implementation(libs.multipaz.android) {

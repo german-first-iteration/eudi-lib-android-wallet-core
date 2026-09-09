@@ -111,8 +111,10 @@ kotlin {
 dependencies {
 
     // EUDI libs
-    api(libs.eudi.document.manager)
-    api(libs.eudi.iso18013.data.transfer)
+    // EUDI-changed: upstream has these as sibling projects (:document-manager,
+    // :transfer-manager) since v0.30.0; inside the app they are :core:*.
+    api(project(":core:document-manager"))
+    api(project(":core:transfer-manager"))
     // OpenID4VCI
     // EUDI-added
     api(project(":openid4vci"))
