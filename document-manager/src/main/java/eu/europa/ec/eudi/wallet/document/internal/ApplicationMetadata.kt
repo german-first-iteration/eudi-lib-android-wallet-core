@@ -224,7 +224,16 @@ internal class ApplicationMetadataImpl private constructor(
                 return Data(
                     format = DocumentFormat.fromDataItem(dataItem["format"]),
                     documentManagerId = dataItem["documentManagerId"].asTstr,
-                    credentialPolicy = CreateDocumentSettings.CredentialPolicy.fromDataItem(dataItem["credentialPolicy"]),
+                    credentialPolicy = CreateDocumentSettings.CredentialPolicy.fromDataItem(
+                        dataItem = dataItem["credentialPolicy"],
+                        // Metadata written by document-manager <= 0.17.x kept the credential count
+                        // in this separate key, because the legacy policies carried no properties.
+                        // It is absent from metadata written by this version, where the count is
+                        // part of the policy itself.
+                        legacyNumberOfCredentials = dataItem.getValue("initialCredentialsCount") {
+                            it.asNumber.toInt()
+                        },
+                    ),
                     keyAttestation = dataItem.getValue("keyAttestation") { it.asTstr },
                     issuerMetadata = dataItem.getValue("issuerMetadata") {
                         fromJson(

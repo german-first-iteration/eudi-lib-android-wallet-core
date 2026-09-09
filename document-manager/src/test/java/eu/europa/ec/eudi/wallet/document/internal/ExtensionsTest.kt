@@ -154,6 +154,62 @@ class ExtensionsTest {
     }
 
     @Test
+    fun `test CredentialPolicy fromDataItem maps legacy OneTimeUse onto OnceOnly`() {
+        // document-manager <= 0.17.x stored `data object OneTimeUse`, so the map holds only "type"
+        val legacyDataItem = buildCborMap {
+            put("type", "eu.europa.ec.eudi.wallet.document.CreateDocumentSettings\$CredentialPolicy\$OneTimeUse")
+        }
+
+        val policy = CreateDocumentSettings.CredentialPolicy.fromDataItem(
+            dataItem = legacyDataItem,
+            legacyNumberOfCredentials = 5,
+        )
+
+        // OnceOnly keeps OneTimeUse's behaviour: delete after use, offer only unused credentials
+        assertEquals(
+            CreateDocumentSettings.CredentialPolicy.OnceOnly(numberOfCredentials = 5),
+            policy,
+        )
+    }
+
+    @Test
+    fun `test CredentialPolicy fromDataItem maps legacy RotateUse onto RotatingBatch`() {
+        val legacyDataItem = buildCborMap {
+            put("type", "eu.europa.ec.eudi.wallet.document.CreateDocumentSettings\$CredentialPolicy\$RotateUse")
+        }
+
+        val policy = CreateDocumentSettings.CredentialPolicy.fromDataItem(
+            dataItem = legacyDataItem,
+            legacyNumberOfCredentials = 3,
+        )
+
+        // RotatingBatch keeps RotateUse's behaviour: increment usage, offer every credential
+        assertEquals(
+            CreateDocumentSettings.CredentialPolicy.RotatingBatch(numberOfCredentials = 3),
+            policy,
+        )
+    }
+
+    @Test
+    fun `test CredentialPolicy fromDataItem defaults legacy credential count to one`() {
+        val legacyDataItem = buildCborMap {
+            put("type", "eu.europa.ec.eudi.wallet.document.CreateDocumentSettings\$CredentialPolicy\$OneTimeUse")
+        }
+
+        // Metadata may predate the "initialCredentialsCount" key, or have stored its 0 default;
+        // neither may make the document unreadable, since the policies require a positive count
+        val withoutCount = CreateDocumentSettings.CredentialPolicy.fromDataItem(legacyDataItem)
+        val withZeroCount = CreateDocumentSettings.CredentialPolicy.fromDataItem(
+            dataItem = legacyDataItem,
+            legacyNumberOfCredentials = 0,
+        )
+
+        val expected = CreateDocumentSettings.CredentialPolicy.OnceOnly(numberOfCredentials = 1)
+        assertEquals(expected, withoutCount)
+        assertEquals(expected, withZeroCount)
+    }
+
+    @Test
     fun `test DocumentFormat toDataItem and fromDataItem for MsoMdocFormat`() {
         // Create format
         val docType = "eu.europa.ec.eudiw.pid.1"

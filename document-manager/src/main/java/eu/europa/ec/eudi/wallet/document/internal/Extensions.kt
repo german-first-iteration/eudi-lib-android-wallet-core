@@ -98,11 +98,19 @@ internal fun CreateDocumentSettings.CredentialPolicy.toDataItem(): DataItem {
  * This function extracts the policy type from the CBOR map and instantiates the appropriate
  * CredentialPolicy based on the stored type information.
  *
+ * Policies written by document-manager <= 0.17.x are also recognised and mapped onto their
+ * behavioural equivalents; see [LEGACY_POLICY_ONE_TIME_USE] and [LEGACY_POLICY_ROTATE_USE].
+ *
  * @param dataItem The CBOR DataItem containing the serialized CredentialPolicy
+ * @param legacyNumberOfCredentials The credential count read from the metadata's legacy
+ *   "initialCredentialsCount" key, used only when [dataItem] holds a legacy policy type
  * @return CredentialPolicy instance based on the type information in the DataItem
  * @throws IllegalArgumentException if the DataItem isn't a CborMap or contains an unknown policy type
  */
-internal fun CreateDocumentSettings.CredentialPolicy.Companion.fromDataItem(dataItem: DataItem): CreateDocumentSettings.CredentialPolicy {
+internal fun CreateDocumentSettings.CredentialPolicy.Companion.fromDataItem(
+    dataItem: DataItem,
+    legacyNumberOfCredentials: Int? = null,
+): CreateDocumentSettings.CredentialPolicy {
     require(dataItem is CborMap) {
         "Expected dataItem to be a CborMap for CredentialPolicy."
     }
@@ -122,9 +130,52 @@ internal fun CreateDocumentSettings.CredentialPolicy.Companion.fromDataItem(data
                 numberOfCredentials = dataItem["numberOfCredentials"].asNumber.toInt(),
                 reissueTriggerLifetimeLeft = dataItem.getOrNull("reissueTriggerLifetimeLeft")?.asNumber?.toLong()?.seconds,
             )
+
+        // Documents stored by document-manager <= 0.17.x recorded `data object OneTimeUse` /
+        // `data object RotateUse`, whose CBOR map holds only the "type" key; the credential count
+        // lived in the metadata's separate "initialCredentialsCount" key and is handed in here as
+        // [legacyNumberOfCredentials]. These are mapped onto the policies that keep exactly the
+        // same behaviour: OneTimeUse and OnceOnly both delete the credential after a single use
+        // and only offer unused credentials, while RotateUse and RotatingBatch both increment the
+        // usage count and offer every credential. Neither legacy policy carried a reissuance
+        // trigger, so the trigger stays null.
+        LEGACY_POLICY_ONE_TIME_USE ->
+            CreateDocumentSettings.CredentialPolicy.OnceOnly(
+                numberOfCredentials = legacyNumberOfCredentials.orLegacyDefault(),
+            )
+
+        LEGACY_POLICY_ROTATE_USE ->
+            CreateDocumentSettings.CredentialPolicy.RotatingBatch(
+                numberOfCredentials = legacyNumberOfCredentials.orLegacyDefault(),
+            )
+
         else -> throw IllegalArgumentException("Unknown credential policy type: $type")
     }
 }
+
+/**
+ * Fully qualified name of the `OneTimeUse` credential policy as stored by document-manager
+ * versions up to 0.17.x. The class no longer exists, so the name cannot be derived from it.
+ */
+private const val LEGACY_POLICY_ONE_TIME_USE =
+    "eu.europa.ec.eudi.wallet.document.CreateDocumentSettings\$CredentialPolicy\$OneTimeUse"
+
+/**
+ * Fully qualified name of the `RotateUse` credential policy as stored by document-manager
+ * versions up to 0.17.x. The class no longer exists, so the name cannot be derived from it.
+ */
+private const val LEGACY_POLICY_ROTATE_USE =
+    "eu.europa.ec.eudi.wallet.document.CreateDocumentSettings\$CredentialPolicy\$RotateUse"
+
+/**
+ * Coerces a legacy credential count into the range the current policies accept.
+ *
+ * [CreateDocumentSettings.CredentialPolicy.OnceOnly] and
+ * [CreateDocumentSettings.CredentialPolicy.RotatingBatch] both require a positive count, whereas
+ * the legacy metadata field defaulted to 0 and is absent altogether for documents written before
+ * it was introduced. Falling back to 1 keeps such documents readable.
+ */
+private fun Int?.orLegacyDefault(): Int = (this ?: 1).coerceAtLeast(1)
 
 /**
  * Converts a DocumentFormat to a CBOR DataItem for serialization.

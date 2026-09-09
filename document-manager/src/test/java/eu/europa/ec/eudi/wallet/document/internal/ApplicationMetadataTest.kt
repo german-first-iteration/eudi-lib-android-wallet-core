@@ -21,6 +21,10 @@ import eu.europa.ec.eudi.wallet.document.format.MsoMdocFormat
 import eu.europa.ec.eudi.wallet.document.format.SdJwtVcFormat
 import eu.europa.ec.eudi.wallet.document.metadata.IssuerMetadata
 import kotlinx.io.bytestring.ByteString
+import org.multipaz.cbor.Cbor
+import org.multipaz.cbor.Tstr
+import org.multipaz.cbor.buildCborMap
+import org.multipaz.cbor.toDataItem
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -234,5 +238,46 @@ class ApplicationMetadataTest {
         assertNotNull(restored.issuerProvidedData)
         assertEquals("test-data", restored.issuerProvidedData?.let { String(it) })
         assertNotNull(restored.issuedAt)
+    }
+
+    @Test
+    fun `deserialization migrates metadata written by document-manager 0_17`() {
+        // Metadata as document-manager <= 0.17.x wrote it: the credential policy is a bare
+        // `data object` name and the credential count sits in its own top-level key.
+        val legacyCbor = ByteString(
+            Cbor.encode(
+                buildCborMap {
+                    put("documentManagerId", Tstr(testDocumentManagerId))
+                    put("format", testFormat.toDataItem())
+                    put("initialCredentialsCount", 5.toDataItem())
+                    put(
+                        "credentialPolicy",
+                        buildCborMap {
+                            put(
+                                "type",
+                                "eu.europa.ec.eudi.wallet.document.CreateDocumentSettings" +
+                                    "\$CredentialPolicy\$OneTimeUse",
+                            )
+                        },
+                    )
+                    put("keyAttestation", Tstr(testKeyAttestation))
+                }
+            )
+        )
+
+        val restored = ApplicationMetadata.create(
+            documentId = testDocumentId,
+            serializedData = legacyCbor,
+        )
+
+        assertEquals(
+            CreateDocumentSettings.CredentialPolicy.OnceOnly(numberOfCredentials = 5),
+            restored.credentialPolicy,
+        )
+        // The count that used to live in its own key is now read through the policy
+        assertEquals(5, restored.initialCredentialsCount)
+        assertEquals(testFormat, restored.format)
+        assertEquals(testDocumentManagerId, restored.documentManagerId)
+        assertEquals(testKeyAttestation, restored.keyAttestation)
     }
 }
