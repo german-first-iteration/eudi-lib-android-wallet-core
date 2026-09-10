@@ -22,6 +22,7 @@ import eu.europa.ec.eudi.openid4vci.Issuer
 import eu.europa.ec.eudi.openid4vci.KeyAttestationJWT
 import eu.europa.ec.eudi.openid4vci.ProofSpecification
 import eu.europa.ec.eudi.openid4vci.ProofType
+import eu.europa.ec.eudi.openid4vci.ProofTypeMeta
 import eu.europa.ec.eudi.openid4vci.ProofTypesSupported
 import eu.europa.ec.eudi.openid4vci.SubmissionOutcome
 import eu.europa.ec.eudi.wallet.document.UnsignedDocument
@@ -33,6 +34,10 @@ internal class SubmitRequest(
     val walletKeyAttestationProvider: WalletKeyAttestationProvider?,
     val issuer: Issuer,
     authorizedRequest: AuthorizedRequest,
+    /**
+     * FORK ADDITION -- see [OpenId4VciManager.SupportedProofTypes.allowJwtProofWithoutKeyAttestation].
+     */
+    private val allowJwtProofWithoutKeyAttestation: Boolean = false,
 ) {
     var authorizedRequest: AuthorizedRequest = authorizedRequest
         private set
@@ -74,12 +79,36 @@ internal class SubmitRequest(
         val signers = unsignedDocument.getPoPSigners()
         val proofTypesSupported = offeredDocument.configuration.proofTypesSupported
 
+        // FORK ADDITION -- an issuer that advertises a `jwt` proof type *without*
+        // `key_attestations_required` is telling us it does not want a key attestation. When the
+        // caller has opted in for this issuer, serve it a plain JWT proof ahead of the two
+        // key-attestation shapes below, even if it also advertises `attestation`: EAA providers
+        // are currently being asked to publish an `attestation` entry they do not implement,
+        // purely to satisfy other wallets' client-side checks.
+        //
+        // The opt-in is what keeps the PID path intact. Metadata shape alone is not a usable
+        // discriminator: the Bundesdruckerei PID issuer publishes exactly the same combination
+        // (`attestation` with `key_attestations_required` plus `jwt` without it) and must keep
+        // using the attestation proof, because for PID the wallet holds a real rWSCA Wallet Trust
+        // Evidence.
+        val jwtProofType = proofTypesSupported[ProofType.JWT] as? ProofTypeMeta.Jwt
+
         val (updatedAuthorizedRequest, outcome) = when {
             // Issuer requires no proof
             proofTypesSupported == ProofTypesSupported.Empty -> {
                 with(issuer) {
                     authorizedRequest.request(payload, ProofSpecification.NoProof)
                 }.getOrThrow()
+            }
+            // Plain JWT proof: opted in, issuer supports JWT proofs and requires no key attestation
+            allowJwtProofWithoutKeyAttestation &&
+                jwtProofType != null && jwtProofType.keyAttestationRequirement == null -> {
+                authorizedRequest.requestWithPlainJwtProof(
+                    payload, signers, keyUnlockData,
+                    unlockResume = { updatedKeyUnlockData ->
+                        submitRequest(unsignedDocument, offeredDocument, updatedKeyUnlockData)
+                    }
+                )
             }
             // Attestation proof (if provider available & issuer supports it)
             proofTypesSupported[ProofType.ATTESTATION] != null && walletKeyAttestationProvider != null -> {
@@ -138,6 +167,41 @@ internal class SubmitRequest(
         return with(issuer) {
             request(payload, proofsSpecification)
         }.getOrThrow()
+    }
+
+    /**
+     * FORK ADDITION -- requests with one plain JWT proof per credential-binding key. No key
+     * attestation is fetched, so no wallet provider is contacted. See [PlainProofSigner].
+     */
+    private suspend fun AuthorizedRequest.requestWithPlainJwtProof(
+        payload: IssuanceRequestPayload,
+        signers: List<ProofOfPossessionSigner>,
+        keyUnlockData: Map<String, KeyUnlockData?>?,
+        unlockResume: suspend (Map<String, KeyUnlockData?>) -> ResponseResult<SubmissionOutcome>,
+    ): Pair<AuthorizedRequest, SubmissionOutcome> {
+        val proofSigner = PlainProofSigner(signers, keyUnlockData)
+        val proofsSpecification = ProofSpecification.JwtProofWithoutKeyAttestation(
+            proofSigners = proofSigner.asSigners()
+        )
+        try {
+            return with(issuer) { request(payload, proofsSpecification) }.getOrThrow()
+        } catch (e: Throwable) {
+            val isUserAuthRequired = proofSigner.keyLockedException != null
+            if (isUserAuthRequired) {
+                val keysAndSecureAreas = proofSigner.signers
+                    .associate { it.keyAlias to it.secureArea }
+                throw UserAuthRequiredException(
+                    signingAlgorithm = proofSigner.algorithm,
+                    keysAndSecureAreas = keysAndSecureAreas,
+                    resume = { updatedKeyUnlockData ->
+                        unlockResume(updatedKeyUnlockData)
+                    },
+                    cause = e
+                )
+            } else {
+                throw e
+            }
+        }
     }
 
     private suspend fun AuthorizedRequest.requestWithJwtProofWithKeyAttestation(

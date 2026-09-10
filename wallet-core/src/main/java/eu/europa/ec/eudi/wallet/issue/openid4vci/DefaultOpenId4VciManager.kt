@@ -658,7 +658,12 @@ internal class DefaultOpenId4VciManager(
 
             //  Submit the issuance request using stored AuthorizedRequest
             //  (skips the authorization flow - uses refresh token instead)
-            val submit = SubmitRequest(walletProvider, issuer, updatedAuthorizedRequest)
+            val submit = SubmitRequest(
+                walletProvider,
+                issuer,
+                updatedAuthorizedRequest,
+                config.proofTypes.allowJwtProofWithoutKeyAttestation,
+            )
             var response = submit.request(requestMap).also {
                 authorizedRequest = submit.authorizedRequest
             }
@@ -674,7 +679,12 @@ internal class DefaultOpenId4VciManager(
                 }
                 logger?.d(TAG, "Re-issuance token expired for $documentId, falling back to full authorization")
                 authorizedRequest = issuerAuthorization.authorize(issuer, null)
-                val retrySubmit = SubmitRequest(walletProvider, issuer, authorizedRequest)
+                val retrySubmit = SubmitRequest(
+                    walletProvider,
+                    issuer,
+                    authorizedRequest,
+                    config.proofTypes.allowJwtProofWithoutKeyAttestation,
+                )
                 response = retrySubmit.request(requestMap).also {
                     authorizedRequest = retrySubmit.authorizedRequest
                 }
@@ -779,7 +789,12 @@ internal class DefaultOpenId4VciManager(
         )
         val requestMap = documentCreator.createDocuments(offer)
 
-        val submit = SubmitRequest(walletProvider, issuer, authorizedRequest)
+        val submit = SubmitRequest(
+            walletProvider,
+            issuer,
+            authorizedRequest,
+            config.proofTypes.allowJwtProofWithoutKeyAttestation,
+        )
         val response = submit.request(requestMap).also {
             authorizedRequest = submit.authorizedRequest
         }

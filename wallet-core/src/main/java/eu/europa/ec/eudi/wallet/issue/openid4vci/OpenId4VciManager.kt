@@ -551,11 +551,26 @@ interface OpenId4VciManager {
      * @property isNoProofSupported Whether the wallet supports issuers that require no proof
      * @property jwtProofAlgorithms Supported algorithms for JWT proof type, or null to disable
      * @property attestationProofAlgorithms Supported algorithms for attestation proof type, or null to disable
+     * @property allowJwtProofWithoutKeyAttestation Whether the wallet may answer with a plain JWT
+     *           proof -- one carrying the binding key as `jwk` and **no** key attestation -- when
+     *           the issuer advertises a `jwt` proof type without `key_attestations_required`.
+     *
+     *           FORK ADDITION -- defaults to `false`, so behaviour is unchanged unless a caller
+     *           opts in per issuer. When `true`, a plain JWT proof is preferred over both key
+     *           attestation shapes for such issuers, *including* issuers that also advertise
+     *           `attestation`: EAA providers are currently being asked to publish an `attestation`
+     *           entry they do not implement, purely to satisfy other wallets' client-side checks.
+     *
+     *           Only enable this for issuers where a key attestation is genuinely not wanted. A
+     *           plain JWT proof proves possession of a key but carries no wallet-provider
+     *           assertion about how that key is stored, which is why HAIP v1 / ARF TS3 require a
+     *           key attestation for device-bound attestations.
      */
     data class SupportedProofTypes(
         val isNoProofSupported: Boolean = true,
         val jwtProofAlgorithms: Set<Algorithm>? = null,
         val attestationProofAlgorithms: Set<Algorithm>? = null,
+        val allowJwtProofWithoutKeyAttestation: Boolean = false,
     ) {
         companion object {
             val Default = SupportedProofTypes(
